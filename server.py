@@ -5,6 +5,7 @@ import torch
 from PIL import Image
 import io
 from ultralytics.nn.tasks import OBBModel  # sua classe personalizada
+from torchvision import transforms
 
 app = FastAPI(title="Orientation Model Serverless")
 
@@ -13,20 +14,27 @@ with torch.serialization.add_safe_globals([OBBModel]):
     model = torch.load("Orientation.pt", weights_only=True)
 model.eval()
 
-# Função auxiliar para converter saída do modelo para CVAT JSON
+# Transformação de imagem (adapte tamanho/normalização se necessário)
+transform = transforms.Compose([
+    transforms.Resize((640, 640)),  # ajuste conforme seu modelo
+    transforms.ToTensor()
+])
+
 def format_cvat_output(predictions):
     """
-    predictions: saída do seu modelo, lista de detecções
-    Cada detecção: [x1, y1, x2, y2, class_id, score]
+    predictions: lista de detecções do modelo
+    Cada detecção: [x1, y1, x2, y2, x3, y3, x4, y4, class_id, score]
     """
     results = []
     for det in predictions:
-        x1, y1, x2, y2, class_id, score = det
+        points = det[:8]  # 4 vértices: x1,y1,...,x4,y4
+        class_id = int(det[8])
+        score = float(det[9])
         results.append({
-            "label": str(int(class_id)),
-            "points": [x1, y1, x2, y2],
-            "type": "rectangle",
-            "score": float(score)
+            "label": str(class_id),
+            "points": points,
+            "type": "obb",
+            "score": score
         })
     return results
 
@@ -36,14 +44,12 @@ async def predict(file: UploadFile = File(...)):
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # Aqui você aplica seu preprocessing se houver (transform)
-    # Exemplo genérico: transform = ...
-    # image_tensor = transform(image).unsqueeze(0)
+    # Preprocess
+    image_tensor = transform(image).unsqueeze(0)  # [1, C, H, W]
 
     # Inferência
     with torch.no_grad():
-        outputs = model(image)  # adapte se seu modelo exigir tensor 4D
-        # Se a saída for tensor, converta para lista
+        outputs = model(image_tensor)  # saída: tensor [N, 10] (x1..x8, class, score)
         if torch.is_tensor(outputs):
             outputs = outputs.tolist()
 
