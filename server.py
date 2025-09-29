@@ -1,19 +1,14 @@
-# server.py
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 import torch
 from PIL import Image
 import io
-from ultralytics.nn.tasks import OBBModel  # classe usada no seu modelo
+from ultralytics import YOLO  # Use the YOLO wrapper for proper loading and inference
 
 app = FastAPI(title="Orientation Model Serverless")
 
-# Registrar a classe customizada para permitir deserialização
-torch.serialization.add_safe_globals([OBBModel])
-
-# Carregar modelo
-model = torch.load("Orientation.pt", weights_only=True)
-model.eval()
+# Carregar modelo usando Ultralytics YOLO
+model = YOLO("Orientation.pt")
 
 # Classes do modelo
 CLASS_NAMES = {
@@ -22,21 +17,25 @@ CLASS_NAMES = {
 }
 
 # Converter saída para JSON compatível com CVAT
-def format_cvat_output(predictions):
+def format_cvat_output(results):
     """
-    predictions: lista de detecções
-    Cada detecção deve ser: [x1, y1, x2, y2, class_id, score]
+    Extrai detecções OBB do results e formata para CVAT como polígonos.
     """
-    results = []
-    for det in predictions:
-        x1, y1, x2, y2, class_id, score = det
-        results.append({
-            "label": CLASS_NAMES.get(int(class_id), str(int(class_id))),
-            "points": [x1, y1, x2, y2],
-            "type": "rectangle",  # pode trocar para "polygon" se quiser OBB poligonal
-            "score": float(score)
-        })
-    return results
+    predictions = []
+    if results and results[0].obb:  # Verifica se há resultados OBB
+        obb = results[0].obb
+        for i in range(len(obb)):
+            # Pontos do OBB como lista plana [x1, y1, x2, y2, x3, y3, x4, y4]
+            points = obb.xyxyxyxy[i].flatten().tolist()
+            class_id = int(obb.cls[i].item())
+            score = float(obb.conf[i].item())
+            predictions.append({
+                "label": CLASS_NAMES.get(class_id, str(class_id)),
+                "points": points,
+                "type": "polygon",  # Usando polygon para OBB
+                "score": score
+            })
+    return predictions
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
@@ -44,16 +43,9 @@ async def predict(file: UploadFile = File(...)):
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # TODO: aplicar transforms conforme treino (resize, normalize etc.)
-    # Exemplo genérico:
-    # transform = ...
-    # image_tensor = transform(image).unsqueeze(0)
-
-    # Rodar inferência
+    # Rodar inferência usando o método predict do YOLO
     with torch.no_grad():
-        outputs = model(image)  # ajuste para formato esperado pelo seu modelo
-        if torch.is_tensor(outputs):
-            outputs = outputs.tolist()
+        results = model(image, verbose=False)  # results é uma lista de Results objects
 
     # Resposta no formato CVAT
-    return JSONResponse(content={"predictions": format_cvat_output(outputs)})
+    return JSONResponse(content={"predictions": format_cvat_output(results)})
