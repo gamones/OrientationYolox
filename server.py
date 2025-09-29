@@ -4,37 +4,35 @@ from fastapi.responses import JSONResponse
 import torch
 from PIL import Image
 import io
-from ultralytics.nn.tasks import OBBModel  # sua classe personalizada
-from torchvision import transforms
+from ultralytics.nn.tasks import OBBModel  # classe personalizada do seu modelo
 
 app = FastAPI(title="Orientation Model Serverless")
+
+# Mapear IDs para nomes de classes
+CLASS_NAMES = {
+    0: "Prints",
+    1: "4Flats"
+}
 
 # Carregar modelo de forma segura
 with torch.serialization.add_safe_globals([OBBModel]):
     model = torch.load("Orientation.pt", weights_only=True)
 model.eval()
 
-# Transformação de imagem (adapte tamanho/normalização se necessário)
-transform = transforms.Compose([
-    transforms.Resize((640, 640)),  # ajuste conforme seu modelo
-    transforms.ToTensor()
-])
-
 def format_cvat_output(predictions):
     """
     predictions: lista de detecções do modelo
-    Cada detecção: [x1, y1, x2, y2, x3, y3, x4, y4, class_id, score]
+    Cada detecção: [x_center, y_center, width, height, angle, class_id, score]
     """
     results = []
     for det in predictions:
-        points = det[:8]  # 4 vértices: x1,y1,...,x4,y4
-        class_id = int(det[8])
-        score = float(det[9])
+        x_c, y_c, w, h, angle, class_id, score = det
+
         results.append({
-            "label": str(class_id),
-            "points": points,
-            "type": "obb",
-            "score": score
+            "label": CLASS_NAMES.get(int(class_id), str(int(class_id))),
+            "points": [x_c, y_c, w, h, angle],  # OBB points
+            "type": "obb",  # informa ao CVAT que é OBB
+            "score": float(score)
         })
     return results
 
@@ -44,16 +42,16 @@ async def predict(file: UploadFile = File(...)):
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # Preprocess
-    image_tensor = transform(image).unsqueeze(0)  # [1, C, H, W]
+    # Aqui você aplica seu preprocessing se houver
+    # Exemplo genérico: transform = ...
+    # image_tensor = transform(image).unsqueeze(0)
 
     # Inferência
     with torch.no_grad():
-        outputs = model(image_tensor)  # saída: tensor [N, 10] (x1..x8, class, score)
+        outputs = model(image)  # se precisar, adapte para tensor 4D
         if torch.is_tensor(outputs):
             outputs = outputs.tolist()
 
-    # Formatar para JSON CVAT
+    # Formatar para JSON que CVAT espera
     response = {"predictions": format_cvat_output(outputs)}
-
     return JSONResponse(content=response)
