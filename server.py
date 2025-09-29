@@ -20,16 +20,13 @@ with torch.serialization.add_safe_globals([OBBModel]):
     model = torch.load("Orientation.pt", weights_only=True)
 model.eval()
 
-# Transformação padrão (ajuste se seu modelo exigir algo diferente)
+# Transformação padrão (ajuste se necessário)
 preprocess = transforms.Compose([
-    transforms.ToTensor(),  # converte para tensor CxHxW
+    transforms.ToTensor(),
     # Adicione normalização se seu modelo exigir
 ])
 
 def format_cvat_output(predictions):
-    """
-    predictions: lista de detecções [x1, y1, x2, y2, class_id, score]
-    """
     results = []
     for det in predictions:
         x1, y1, x2, y2, class_id, score = det
@@ -43,21 +40,15 @@ def format_cvat_output(predictions):
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    # Ler imagem
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    # Preprocess
-    image_tensor = preprocess(image).unsqueeze(0)  # adiciona batch dimension
+    image_tensor = preprocess(image).unsqueeze(0)  # batch dimension
 
-    # Inferência
     with torch.no_grad():
         outputs = model(image_tensor)
-        # Se tensor, converta para lista
         if torch.is_tensor(outputs):
             outputs = outputs.tolist()
 
-    # Formatar para CVAT
     response = {"predictions": format_cvat_output(outputs)}
-
     return JSONResponse(content=response)
